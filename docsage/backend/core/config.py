@@ -88,6 +88,92 @@
 
 # settings = Settings()
 
+# """
+# core/config.py — DocSage configuration.
+# All slow optional components (reranker, adversarial filter) are OFF by default.
+# Enable them in .env if you have GPU.
+# """
+# from pydantic_settings import BaseSettings
+# from pathlib import Path
+# from typing import Literal
+
+
+# class Settings(BaseSettings):
+#     app_name: str = "DocSage"
+#     app_version: str = "1.0.0"
+#     environment: Literal["development", "staging", "production"] = "development"
+#     debug: bool = False
+#     log_level: str = "INFO"
+
+#     api_prefix: str = "/api/v1"
+#     cors_origins: list[str] = ["*"]
+#     max_upload_size_mb: int = 50
+#     request_timeout_seconds: int = 180
+
+#     secret_key: str = "CHANGE_ME_IN_PRODUCTION_32_CHARS_MIN"
+#     access_token_expire_minutes: int = 60 * 24
+
+#     data_dir: Path = Path("./data")
+#     documents_dir: Path = Path("./data/documents")
+#     index_dir: Path = Path("./data/indices")
+#     model_cache_dir: Path = Path("./data/model_cache")
+#     database_url: str = "sqlite+aiosqlite:///./data/docsage.db"
+
+#     redis_url: str = "redis://localhost:6379/0"
+#     session_ttl_seconds: int = 60 * 60 * 4
+
+#     # ── Reader (extractive QA) ────────────────────────────────────────────────
+#     # deepset/roberta-base-squad2 is the best open-source QA model for English
+#     reader_model_name: str = "deepset/roberta-base-squad2"
+#     reader_model_device: str = "cpu"
+
+#     # ── Embedder (dense retrieval) ────────────────────────────────────────────
+#     embedder_model_name: str = "sentence-transformers/all-MiniLM-L6-v2"
+#     embedder_batch_size: int = 32
+#     embedding_dim: int = 384
+
+#     # ── Reranker ─────────────────────────────────────────────────────────────
+#     # DISABLED by default — cross-encoder adds 5-15s per query on CPU
+#     # Set ENABLE_RERANKER=true in .env to turn on (GPU recommended)
+#     reranker_model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+#     enable_reranker: bool = False
+
+#     # ── Adversarial filter ────────────────────────────────────────────────────
+#     # DISABLED by default — ELECTRA adds ~300ms even on CPU
+#     # Set ENABLE_ADVERSARIAL_FILTER=true in .env to turn on
+#     robustness_model_name: str = "google/electra-base-discriminator"
+#     robustness_threshold: float = 0.7
+#     enable_adversarial_filter: bool = False
+#     adversarial_score_penalty: float = 0.15
+
+#     # ── Chunking ──────────────────────────────────────────────────────────────
+#     # Smaller chunks = more targeted retrieval = better answers
+#     chunk_size_tokens: int = 200
+#     chunk_overlap_tokens: int = 40
+#     max_chunks_per_doc: int = 5000
+#     long_doc_threshold_tokens: int = 512
+
+#     # ── Retrieval ─────────────────────────────────────────────────────────────
+#     retrieval_top_k: int = 8      # candidates from hybrid retrieval
+#     rerank_top_k: int = 5         # passed to reader after optional reranking
+#     dense_weight: float = 0.5
+#     sparse_weight: float = 0.5    # BM25 weighted equally — better for keyword Qs
+#     kg_weight: float = 0.0        # KG disabled (adds noise on small docs)
+#     faiss_nprobe: int = 8
+
+#     # ── Conversation ──────────────────────────────────────────────────────────
+#     max_history_turns: int = 6
+
+#     class Config:
+#         env_file = ".env"
+#         env_file_encoding = "utf-8"
+
+#     def create_dirs(self) -> None:
+#         for d in [self.data_dir, self.documents_dir, self.index_dir, self.model_cache_dir]:
+#             d.mkdir(parents=True, exist_ok=True)
+
+
+# settings = Settings()
 """
 core/config.py — DocSage configuration.
 All slow optional components (reranker, adversarial filter) are OFF by default.
@@ -106,7 +192,6 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
     api_prefix: str = "/api/v1"
-    cors_origins: list[str] = ["*"]
     max_upload_size_mb: int = 50
     request_timeout_seconds: int = 180
 
