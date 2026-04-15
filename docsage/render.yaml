@@ -1,0 +1,39 @@
+# render.yaml — place this in the ROOT of your repo (not inside backend/)
+# Render reads this file automatically when you connect the repo.
+#
+# If you prefer manual setup in the Render dashboard, the key settings are:
+#   Build Command:  cd backend && pip install -r requirements.txt
+#   Start Command:  cd backend && uvicorn api.main:app --host 0.0.0.0 --port $PORT
+#   Health Check:   /api/v1/health
+
+services:
+  - type: web
+    name: docsage-backend
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: DEBUG
+        value: false
+      - key: READER_MODEL_NAME
+        value: deepset/roberta-base-squad2
+      - key: READER_MODEL_DEVICE
+        value: cpu
+      - key: ENABLE_RERANKER
+        value: false
+      - key: ENABLE_ADVERSARIAL_FILTER
+        value: false
+      - key: CHUNK_SIZE_TOKENS
+        value: 200
+      - key: RETRIEVAL_TOP_K
+        value: 8
+      - key: CORS_ORIGINS
+        value: "*"
+      # Generate this: python3 -c "import secrets; print(secrets.token_hex(32))"
+      - key: SECRET_KEY
+        generateValue: true
+      # Render sets PORT automatically — do not override it
