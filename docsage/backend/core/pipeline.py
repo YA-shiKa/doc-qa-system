@@ -280,13 +280,6 @@
 #         if session_id not in self._sessions:
 #             self._sessions[session_id] = Session(session_id=session_id)
 #         return self._sessions[session_id]
-"""
-core/pipeline.py — DocSage QA Pipeline.
-
-All optional components (reranker, adversarial filter) are controlled by
-settings flags — not hardcoded. This is the version that actually respects
-enable_reranker=False and enable_adversarial_filter=False.
-"""
 from __future__ import annotations
 
 import time
@@ -306,6 +299,10 @@ from models.reranker import CrossEncoderReranker, AdversarialFilter
 logger = get_logger(__name__)
 
 
+# ─────────────────────────────────────────────────────────────
+# Data Classes
+# ─────────────────────────────────────────────────────────────
+
 @dataclass
 class ConversationTurn:
     question: str
@@ -321,16 +318,22 @@ class Session:
     history: list[ConversationTurn] = field(default_factory=list)
 
     def add_turn(self, question: str, answer: QAAnswer) -> None:
-        self.history.append(ConversationTurn(
-            question=question,
-            answer=answer.answer,
-            confidence=answer.confidence,
-        ))
+        self.history.append(
+            ConversationTurn(
+                question=question,
+                answer=answer.answer,
+                confidence=answer.confidence,
+            )
+        )
+
         if len(self.history) > settings.max_history_turns:
             self.history = self.history[-settings.max_history_turns:]
 
     def history_as_list(self) -> list[dict]:
-        return [{"question": t.question, "answer": t.answer} for t in self.history]
+        return [
+            {"question": t.question, "answer": t.answer}
+            for t in self.history
+        ]
 
 
 @dataclass
@@ -346,160 +349,200 @@ class PipelineResponse:
     session_id: str
 
 
+# ─────────────────────────────────────────────────────────────
+# Main Pipeline (Deployment Safe)
+# ─────────────────────────────────────────────────────────────
+
 class DocSagePipeline:
-    _instance: Optional["DocSagePipeline"] = None
+    _instance = None
 
     def __init__(self):
         settings.create_dirs()
+
+        # Lightweight components (safe at startup)
         self.parser = DocumentParser()
         self.chunker = HierarchicalChunker()
         self.retriever = HybridRetriever()
 
-        # Lazy-loaded — only instantiated on first use
-        self._reader: Optional[BERTReader] = None
-        self._reranker: Optional[CrossEncoderReranker] = None
-        self._adv_filter: Optional[AdversarialFilter] = None
+        # Lazy-loaded heavy models
+        self._reader = None
+        self._reranker = None
+        self._adv_filter = None
 
-        self._sessions: dict[str, Session] = {}
-        logger.info("pipeline_ready",
-                    reranker=settings.enable_reranker,
-                    adversarial=settings.enable_adversarial_filter)
+        self._sessions = {}
+
+        logger.info("pipeline_initialized_lazy")
 
     @classmethod
-    def get(cls) -> "DocSagePipeline":
+    def get(cls):
         if cls._instance is None:
+            logger.info("creating_pipeline_singleton")
             cls._instance = cls()
         return cls._instance
 
-    # ── Lazy loaders ─────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────
+    # Lazy Loading (CRITICAL FOR DEPLOYMENT)
+    # ─────────────────────────────────────────────────────────
 
     @property
-    def reader(self) -> BERTReader:
+    def reader(self):
         if self._reader is None:
+            logger.info("loading_reader_model_on_demand")
             self._reader = BERTReader()
         return self._reader
 
     @property
-    def reranker(self) -> CrossEncoderReranker:
+    def reranker(self):
         if self._reranker is None:
+            logger.info("loading_reranker_model_on_demand")
             self._reranker = CrossEncoderReranker()
         return self._reranker
 
     @property
-    def adv_filter(self) -> AdversarialFilter:
+    def adv_filter(self):
         if self._adv_filter is None:
+            logger.info("loading_adv_filter_on_demand")
             self._adv_filter = AdversarialFilter()
         return self._adv_filter
 
-    # ── Document management ───────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────
+    # Document Ingestion
+    # ─────────────────────────────────────────────────────────
 
     def ingest_document(self, file_path: Path, doc_id: Optional[str] = None) -> str:
         doc_id = doc_id or str(uuid.uuid4())
         t0 = time.perf_counter()
-        logger.info("ingesting", path=str(file_path), doc_id=doc_id)
 
+        logger.info("ingesting_document", doc_id=doc_id)
+
+        # Parse
+        t1 = time.perf_counter()
         parsed = self.parser.parse(file_path, doc_id)
-        chunks = self.chunker.chunk_document(parsed)
-        self.retriever.add_chunks(chunks)
+        parse_ms = (time.perf_counter() - t1) * 1000
 
-        logger.info("ingested",
-                    doc_id=doc_id,
-                    sections=len(parsed.sections),
-                    chunks=len(chunks),
-                    ms=round((time.perf_counter() - t0) * 1000))
+        # Chunk
+        t2 = time.perf_counter()
+        chunks = self.chunker.chunk_document(parsed)
+        chunk_ms = (time.perf_counter() - t2) * 1000
+
+        # Index
+        t3 = time.perf_counter()
+        self.retriever.add_chunks(chunks)
+        index_ms = (time.perf_counter() - t3) * 1000
+
+        total_ms = (time.perf_counter() - t0) * 1000
+
+        logger.info(
+            "ingestion_complete",
+            doc_id=doc_id,
+            chunks=len(chunks),
+            parse_ms=round(parse_ms),
+            chunk_ms=round(chunk_ms),
+            index_ms=round(index_ms),
+            total_ms=round(total_ms),
+        )
+
         return doc_id
 
     def remove_document(self, doc_id: str) -> int:
         return self.retriever.remove_doc(doc_id)
 
-    # ── Question answering ────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────
+    # QA Pipeline
+    # ─────────────────────────────────────────────────────────
 
-    def answer(
-        self,
-        question: str,
-        session_id: str,
-        doc_ids: Optional[list[str]] = None,
-    ) -> PipelineResponse:
+    def answer(self, question: str, session_id: str, doc_ids=None) -> PipelineResponse:
         t_total = time.perf_counter()
-        lat: dict[str, float] = {}
+        latency = {}
 
-        # 0. Adversarial filter (no-op when disabled)
+        # 0. Adversarial Filter (lazy)
         t0 = time.perf_counter()
-        adv = self.adv_filter.score(question) if settings.enable_adversarial_filter else None
-        lat["adversarial_ms"] = (time.perf_counter() - t0) * 1000
+        adv_score = self.adv_filter.score(question)
+        latency["adversarial_ms"] = (time.perf_counter() - t0) * 1000
 
-        # 1. Retrieve
+        # 1. Retrieval
         t1 = time.perf_counter()
-        session = self._get_or_create(session_id)
-        search_doc_ids = doc_ids or session.doc_ids or None
-        retrieved = self.retriever.retrieve(query=question, doc_ids=search_doc_ids)
-        lat["retrieval_ms"] = (time.perf_counter() - t1) * 1000
+        session = self._get_or_create_session(session_id)
 
-        # 2. Rerank (no-op when disabled — just unwrap chunks)
+        retrieved = self.retriever.retrieve(
+            query=question,
+            doc_ids=doc_ids or session.doc_ids or None,
+        )
+        latency["retrieval_ms"] = (time.perf_counter() - t1) * 1000
+
+        # 2. Reranking (lazy)
         t2 = time.perf_counter()
-        if settings.enable_reranker and retrieved:
-            chunks = self.reranker.rerank(query=question, passages=retrieved)
-        else:
-            chunks = [p.chunk for p in retrieved]
-        lat["reranking_ms"] = (time.perf_counter() - t2) * 1000
+        reranked = self.reranker.rerank(question, retrieved)
+        latency["reranking_ms"] = (time.perf_counter() - t2) * 1000
 
-        # 3. Read
+        # 3. Reader (lazy)
         t3 = time.perf_counter()
-        qa = self.reader.answer(
-            question=question,
-            passages=chunks,
+        qa_answer = self.reader.answer(
+            question,
+            reranked,
             history=session.history_as_list(),
         )
-        lat["reading_ms"] = (time.perf_counter() - t3) * 1000
+        latency["reading_ms"] = (time.perf_counter() - t3) * 1000
 
-        # 4. Apply adversarial penalty if flagged
-        if adv and adv.is_suspicious:
-            qa.confidence = max(0.0, qa.confidence - adv.penalty)
+        # Adjust confidence if adversarial
+        if adv_score.is_suspicious:
+            qa_answer.confidence = max(0.0, qa_answer.confidence - adv_score.penalty)
 
-        session.add_turn(question, qa)
+        # Update session
+        session.add_turn(question, qa_answer)
 
         total_ms = (time.perf_counter() - t_total) * 1000
-        lat["total_ms"] = total_ms
+        latency["total_ms"] = total_ms
 
-        logger.info("answered",
-                    session=session_id,
-                    confidence=round(qa.confidence, 3),
-                    ms=round(total_ms),
-                    type=qa.answer_type)
+        logger.info(
+            "qa_complete",
+            session_id=session_id,
+            confidence=round(qa_answer.confidence, 3),
+            latency_ms=round(total_ms),
+        )
 
         return PipelineResponse(
-            answer=qa.answer,
-            confidence=qa.confidence,
-            is_impossible=qa.is_impossible,
-            sources=qa.sources,
-            adversarial_risk=adv.risk_level if adv else "low",
-            answer_type=qa.answer_type,
-            latency_breakdown=lat,
+            answer=qa_answer.answer,
+            confidence=qa_answer.confidence,
+            is_impossible=qa_answer.is_impossible,
+            sources=qa_answer.sources,
+            adversarial_risk=adv_score.risk_level,
+            answer_type=qa_answer.answer_type,
+            latency_breakdown=latency,
             total_latency_ms=total_ms,
             session_id=session_id,
         )
 
-    # ── Session management ────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────
+    # Session Management
+    # ─────────────────────────────────────────────────────────
 
-    def create_session(self, doc_ids: Optional[list[str]] = None) -> str:
-        sid = str(uuid.uuid4())
-        self._sessions[sid] = Session(session_id=sid, doc_ids=doc_ids or [])
-        return sid
+    def create_session(self, doc_ids=None):
+        session_id = str(uuid.uuid4())
+        self._sessions[session_id] = Session(
+            session_id=session_id,
+            doc_ids=doc_ids or [],
+        )
+        return session_id
 
-    def get_session_history(self, session_id: str) -> list[dict]:
-        s = self._sessions.get(session_id)
-        if not s:
+    def get_session_history(self, session_id):
+        session = self._sessions.get(session_id)
+        if not session:
             return []
         return [
-            {"question": t.question, "answer": t.answer, "confidence": t.confidence}
-            for t in s.history
+            {
+                "question": t.question,
+                "answer": t.answer,
+                "confidence": t.confidence,
+            }
+            for t in session.history
         ]
 
-    def clear_session(self, session_id: str) -> None:
+    def clear_session(self, session_id):
         if session_id in self._sessions:
             self._sessions[session_id].history.clear()
 
-    def _get_or_create(self, session_id: str) -> Session:
+    def _get_or_create_session(self, session_id):
         if session_id not in self._sessions:
             self._sessions[session_id] = Session(session_id=session_id)
         return self._sessions[session_id]
